@@ -45,6 +45,18 @@ function getCount(db, table) {
   return Number(execFirstValue(db, 'SELECT COUNT(*) FROM ' + quoteIdent(table)) || 0)
 }
 
+var EXERCISE_TYPES = {
+  2: 'Badminton', 4: 'Baseball', 5: 'Basketball', 8: 'Biking', 13: 'Cricket',
+  14: 'Dancing', 16: 'Elliptical', 24: 'Golf', 25: 'Guided Breathing',
+  32: 'Gymnastics', 33: 'HIIT', 34: 'Hiking', 37: 'Martial Arts', 44: 'Pilates',
+  56: 'Running', 66: 'Stair Climbing', 69: 'Strength Training', 73: 'Swimming',
+  74: 'Swimming (Open Water)', 78: 'Tennis', 79: 'Walking', 82: 'Wheelchair', 83: 'Yoga'
+}
+
+function getExerciseType(code) {
+  return EXERCISE_TYPES[code] || 'Other (type ' + code + ')'
+}
+
 var METRICS = {
   steps: {
     label: 'Steps',
@@ -202,6 +214,21 @@ function buildDateExpr(sample, columnName) {
   return 'date(' + col + ')'
 }
 
+function buildBucketExpr(sample, columnName) {
+  var col = quoteIdent(columnName)
+  if (sample == null) return null
+  var asNumber = Number(sample)
+  if (!Number.isNaN(asNumber) && String(sample).trim() !== '') {
+    if (asNumber > 100000000000000000) return 'CAST(CAST(' + col + ' AS REAL) / 900000000000 AS INTEGER)' // 15 mins
+    if (asNumber > 100000000000000) return 'CAST(CAST(' + col + ' AS REAL) / 900000000 AS INTEGER)'
+    if (asNumber > 100000000000) return 'CAST(CAST(' + col + ' AS REAL) / 900000 AS INTEGER)'
+    if (asNumber > 1000000000) return 'CAST(CAST(' + col + ' AS REAL) / 900 AS INTEGER)'
+    return null
+  }
+  // ISO string 2026-01-01T10:14:00Z -> bucket by 10 minutes: substr to '2026-01-01T10:1'
+  return 'substr(' + col + ', 1, 15)'
+}
+
 function getDateSummary(db, table, dateColumn) {
   if (!dateColumn) return null
   var qcol = quoteIdent(dateColumn.name)
@@ -237,6 +264,7 @@ function getDateSummary(db, table, dateColumn) {
   } catch (e) {}
 
   summary.dateExpr = dateExpr
+  summary.bucketExpr = buildBucketExpr(sample, dateColumn.name)
   return summary
 }
 
@@ -264,9 +292,13 @@ function getNumericStats(db, table, columns) {
   numeric.forEach(function(column) {
     try {
       var col = quoteIdent(column.name)
+      var filter = getOutlierFilter(null, column.name) // Fallback for fat columns
+      if (lower(column.name).indexOf('fat') !== -1 || lower(column.name).indexOf('percent') !== -1) {
+         filter = ' AND CAST(' + col + ' AS REAL) > 0'
+      }
       var res = db.exec(
         'SELECT COUNT(' + col + '), MIN(CAST(' + col + ' AS REAL)), AVG(CAST(' + col + ' AS REAL)), MAX(CAST(' + col + ' AS REAL)) FROM ' +
-        quoteIdent(table) + ' WHERE ' + col + ' IS NOT NULL'
+        quoteIdent(table) + ' WHERE ' + col + ' IS NOT NULL' + filter
       )
       if (res[0]) {
         var row = res[0].values[0]
@@ -299,21 +331,113 @@ function findValueColumn(metricKey, columns) {
   return numeric[0] || null
 }
 
-function getDailyAggregate(db, table, metricKey, dateSummary, valueColumn) {
+function getOutlierFilter(metricKey, column) {
+  var col = quoteIdent(column)
+  if (metricKey === 'weight' && (lower(column).indexOf('fat') !== -1 || lower(column).indexOf('percent') !== -1)) {
+    return ' AND CAST(' + col + ' AS REAL) > 0'
+  }
+  if (metricKey === 'heartRate' || metricKey === 'restingHeartRate') {
+    return ' AND CAST(' + col + ' AS REAL) >= 35 AND CAST(' + col + ' AS REAL) <= 210'
+  }
+  if (metricKey === 'respiratory') {
+    return ' AND CAST(' + col + ' AS REAL) >= 8 AND CAST(' + col + ' AS REAL) <= 40'
+  }
+  return ''
+}
+
+function getDailyAggregate(db, table, metricKey, dateSummary, valueColumn, columns) {
   if (!dateSummary || !dateSummary.dateExpr || !valueColumn) return null
   var def = METRICS[metricKey] || { aggregate: 'avg' }
-  var valueExpr = 'CAST(' + quoteIdent(valueColumn.name) + ' AS REAL)'
-  var aggregateExpr = def.aggregate === 'sum' ? 'SUM(' + valueExpr + ')' : 'AVG(' + valueExpr + ')'
+  var sourceCol = columns.find(function(c) {
+    var n = lower(c.name)
+    return n.indexOf('source') !== -1 || n.indexOf('package') !== -1 || n.indexOf('app') !== -1 || n.indexOf('device') !== -1 || n.indexOf('client') !== -1
+  })
+  var dateCol = columns.find(function(c) {
+    var n = lower(c.name)
+    return n.indexOf('start_time') !== -1 || n === 'time_epoch_millis' || n === 'time'
+  }) || columns.find(function(c) { return lower(c.name).indexOf('date') !== -1 })
+
+  var qTable = quoteIdent(table)
+  var qValue = quoteIdent(valueColumn.name)
+  var valueExpr = 'CAST(' + qValue + ' AS REAL)'
+  var outlierFilter = getOutlierFilter(metricKey, valueColumn.name)
+  
   try {
-    var res = db.exec(
-      'SELECT ' + dateSummary.dateExpr + ' AS day, ' + aggregateExpr + ' AS value FROM ' + quoteIdent(table) +
-      ' WHERE ' + dateSummary.dateExpr + ' IS NOT NULL AND ' + quoteIdent(valueColumn.name) + ' IS NOT NULL ' +
-      'GROUP BY day ORDER BY day DESC LIMIT 30'
-    )
-    if (!res[0] || !res[0].values.length) return null
-    var values = res[0].values
-      .map(function(row) { return { day: row[0], value: Number(row[1]) } })
-      .filter(function(row) { return row.day && !Number.isNaN(row.value) })
+    var values = []
+    
+    if (def.aggregate === 'sum' && sourceCol && dateCol) {
+      // JS-based sliding window deduplication to avoid arbitrary clock boundaries
+      var qSource = quoteIdent(sourceCol.name)
+      var qDate = quoteIdent(dateCol.name)
+      var query = 'SELECT ' + dateSummary.dateExpr + ' AS day, CAST(' + qDate + ' AS REAL) AS time, ' + qSource + ' AS source, ' + valueExpr + ' AS value ' +
+                  'FROM ' + qTable + ' WHERE ' + dateSummary.dateExpr + ' IS NOT NULL AND ' + qDate + ' IS NOT NULL AND ' + qValue + ' IS NOT NULL' + outlierFilter +
+                  ' ORDER BY day DESC, time ASC'
+      var res = db.exec(query)
+      if (!res[0] || !res[0].values.length) return null
+      
+      var rows = res[0].values
+      var byDay = {}
+      for (var i = 0; i < rows.length; i++) {
+        var day = rows[i][0]
+        var time = rows[i][1]
+        var source = rows[i][2] || 'unknown'
+        var val = Number(rows[i][3])
+        if (!day || Number.isNaN(val)) continue
+        if (!byDay[day]) byDay[day] = []
+        byDay[day].push({ time: time, source: source, val: val })
+      }
+      
+      var windowMs = 900000 // 15 mins
+      if (typeof rows[0][1] === 'number' && rows[0][1] < 10000000000) {
+        windowMs = 900 // unix epoch seconds
+      }
+      
+      for (var dayKey in byDay) {
+        var dayRows = byDay[dayKey]
+        var dailyTotal = 0
+        var windowStart = 0
+        var currentWindow = {}
+        
+        for (var j = 0; j < dayRows.length; j++) {
+          var r = dayRows[j]
+          if (windowStart === 0 || r.time > windowStart + windowMs) {
+            // Commit previous window
+            var maxVal = 0
+            for (var s in currentWindow) {
+              if (currentWindow[s] > maxVal) maxVal = currentWindow[s]
+            }
+            dailyTotal += maxVal
+            // Start new window aligned to this record's start time
+            windowStart = r.time
+            currentWindow = {}
+          }
+          currentWindow[r.source] = (currentWindow[r.source] || 0) + r.val
+        }
+        // Commit last window
+        var maxVal2 = 0
+        for (var s2 in currentWindow) {
+          if (currentWindow[s2] > maxVal2) maxVal2 = currentWindow[s2]
+        }
+        dailyTotal += maxVal2
+        
+        values.push({ day: dayKey, value: dailyTotal })
+      }
+      
+      values.sort(function(a, b) { return a.day > b.day ? -1 : 1 })
+      values = values.slice(0, 30) // Only keep recent 30 days
+      
+    } else {
+      var aggregateExpr = def.aggregate === 'sum' ? 'SUM(' + valueExpr + ')' : 'AVG(' + valueExpr + ')'
+      var query2 = 'SELECT ' + dateSummary.dateExpr + ' AS day, ' + aggregateExpr + ' AS value FROM ' + qTable +
+              ' WHERE ' + dateSummary.dateExpr + ' IS NOT NULL AND ' + qValue + ' IS NOT NULL' + outlierFilter +
+              ' GROUP BY day ORDER BY day DESC LIMIT 30'
+      var res2 = db.exec(query2)
+      if (!res2[0] || !res2[0].values.length) return null
+      values = res2[0].values
+        .map(function(row) { return { day: row[0], value: Number(row[1]) } })
+        .filter(function(row) { return row.day && !Number.isNaN(row.value) })
+    }
+
     if (!values.length) return null
     var avgRecent = values.reduce(function(sum, row) { return sum + row.value }, 0) / values.length
     return {
@@ -399,7 +523,7 @@ self.onmessage = async function(e) {
         var sources = count > 0 ? getSources(db, table, columns) : []
         var numericStats = count > 0 ? getNumericStats(db, table, columns) : []
         var valueColumn = count > 0 ? findValueColumn(metricKey, columns) : null
-        var dailyAggregate = count > 0 ? getDailyAggregate(db, table, metricKey, dateSummary, valueColumn) : null
+        var dailyAggregate = count > 0 ? getDailyAggregate(db, table, metricKey, dateSummary, valueColumn, columns) : null
         var tableWarnings = []
 
         if (sources.length > 1) {
@@ -407,20 +531,25 @@ self.onmessage = async function(e) {
           if (metricKey === 'steps') addWarning(warnings, 'Steps have multiple source hints in at least one table. Use source-prioritised totals before making claims.')
         }
         if ((metricKey === 'heartRate' || metricKey === 'restingHeartRate') && dateSummary && dateSummary.daysCovered) {
+          addWarning(tableWarnings, 'Values outside 35-210 BPM were ignored as likely sensor artifacts.')
           var rowsPerDay = count / Math.max(1, Number(dateSummary.daysCovered))
           if (rowsPerDay > 48) {
             addWarning(tableWarnings, 'High row density suggests sample-level heart data, not one clean daily resting value.')
             addWarning(warnings, 'Heart/resting-HR tables may need daily aggregation before interpretation.')
           }
         }
+        if (metricKey === 'respiratory') {
+          addWarning(tableWarnings, 'Values outside 8-40 breaths/min were ignored as likely sensor artifacts.')
+        }
         if (metricKey === 'sleep') {
           addWarning(tableWarnings, 'Sleep stages are device estimates; unusual deep/REM proportions should be treated as data-quality questions.')
         }
         if (metricKey === 'weight') {
-          var zeroPercent = numericStats.find(function(s) {
-            return lower(s.column).indexOf('fat') !== -1 && s.min === 0
-          })
-          if (zeroPercent) addWarning(tableWarnings, 'A body-fat column contains zero values; zeros may mean missing data rather than true 0%.')
+          addWarning(tableWarnings, 'Body fat percentages ≤0% were ignored as missing data placeholders.')
+        }
+        if (dateSummary && dateSummary.recentMonths) {
+          var lowMonths = dateSummary.recentMonths.filter(function(m) { return m.rows < 10 })
+          if (lowMonths.length > 0) addWarning(tableWarnings, 'Monthly summary includes months with <10 data points. Averages may be unrepresentative.')
         }
 
         var summary = {
@@ -435,6 +564,16 @@ self.onmessage = async function(e) {
           dailyAggregate: dailyAggregate,
           warnings: tableWarnings,
         }
+
+        if (metricKey === 'exercise' && count > 0 && columns.some(function(c) { return c.name === 'exercise_type' })) {
+          try {
+            var typeRes = db.exec('SELECT exercise_type, COUNT(*) FROM ' + quoteIdent(table) + ' GROUP BY exercise_type')
+            if (typeRes[0]) {
+              summary.exerciseTypes = typeRes[0].values.map(function(r) { return getExerciseType(r[0]) + ': ' + r[1] })
+            }
+          } catch(e) {}
+        }
+
         summaries.push(summary)
         grouped[metricKey].push(summary)
       } catch (err) {
@@ -520,6 +659,9 @@ self.onmessage = async function(e) {
             report += '  Numeric summaries: ' + s.numericStats.slice(0, 4).map(function(stat) {
               return stat.column + ' n=' + stat.count + ' min=' + round(stat.min, 1) + ' avg=' + round(stat.avg, 1) + ' max=' + round(stat.max, 1)
             }).join(' | ') + '\n'
+          }
+          if (s.exerciseTypes) {
+            report += '  Exercise breakdown: ' + s.exerciseTypes.join(', ') + '\n'
           }
           if (s.columns && s.columns.length) report += '  Columns: ' + s.columns.slice(0, 18).join(', ') + (s.columns.length > 18 ? ', ...' : '') + '\n'
           if (s.warnings && s.warnings.length) s.warnings.forEach(function(w) { report += '  Warning: ' + w + '\n' })

@@ -13,8 +13,8 @@ export default function SourceManager({ parsedFiles }) {
       // Map known sources list to include DB state
       const known = [
         { id: 'health_connect', name: 'Health Connect', icon: '📱' },
-        { id: 'withings', name: 'Withings', icon: '⚖️' },
-        { id: 'fitbit', name: 'Fitbit', icon: '⌚' },
+        { id: 'withings', name: 'Withings', icon: '⚖️', connectPath: '/api/withings/start' },
+        { id: 'fitbit', name: 'Fitbit', icon: '⌚', connectPath: '/api/fitbit/start' },
         { id: 'sleep_as_android', name: 'Sleep as Android', icon: '😴' },
         { id: 'strava', name: 'Strava', icon: '🏃' },
         { id: 'welltory', name: 'Welltory', icon: '💓' },
@@ -102,6 +102,11 @@ export default function SourceManager({ parsedFiles }) {
                 {s.connected ? `● Connected • Last import ${s.lastImport ? new Date(s.lastImport).toLocaleString() : '—'}` : '○ Not found'}
               </p>
             </div>
+            {s.connectPath && (
+              <a href={s.connectPath} className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-jade/30 text-jade hover:bg-jade hover:text-ink transition-colors whitespace-nowrap">
+                Connect
+              </a>
+            )}
           </div>
         ))}
       </div>

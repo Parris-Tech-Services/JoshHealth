@@ -8,6 +8,7 @@
     "build": "vite build",
     "test": "node --test",
     "test:browser": "playwright test",
+    "validate:health-connect": "node --max-old-space-size=4096 scripts/validate-health-connect.js",
     "preview": "vite preview",
     "fake-sync": "node scripts/send-fake-health-connect-sync.mjs",
     "doctor": "node scripts/healthlens-doctor.mjs",

@@ -16,6 +16,7 @@ import HistoryView from './components/HistoryView.jsx'
 import DataAuditView from './components/DataAuditView.jsx'
 import SettingsPanel from './components/SettingsPanel.jsx'
 import StravaPanel from './components/StravaPanel.jsx'
+import TrendsView from './components/TrendsView.jsx'
 import { parseFile } from './lib/fileParser.js'
 import { runAnalysis } from './lib/claudeApi.js'
 import { isSupabaseConfigured, getDailySummaries, getLatestSyncStatus, getSyncImports, getMetricAvailability, getStravaStatus } from './lib/healthDataApi.js'
@@ -48,7 +49,7 @@ export default function App() {
   const [chatHistory, setChatHistory] = useState([])
   const [showChat, setShowChat] = useState(false)
   const [showCheckIn, setShowCheckIn] = useState(false)
-  const [activeTab, setActiveTab] = useState('upload') // upload, sources, checkin, history, audit, settings
+  const [activeTab, setActiveTab] = useState('upload') // upload, trends, sources, checkin, history, audit, settings
 
   const [supabaseLoading, setSupabaseLoading] = useState(false)
   const [supabaseError, setSupabaseError] = useState('')
@@ -236,8 +237,8 @@ export default function App() {
           {/* Sidebar */}
           <div className="lg:col-span-4 space-y-6">
             <div className="flex items-center justify-between border-b border-slate-border/50 pb-2">
-              <div className="flex gap-2 p-2">
-                {['upload', 'hrv', 'sources', 'history', 'audit', 'checkin', 'settings'].map(tab => (
+              <div className="flex gap-4 overflow-x-auto no-scrollbar pb-1">
+                {['upload', 'hrv', 'trends', 'sources', 'checkin', 'history', 'audit', 'settings'].map(tab => (
                   <button
                     key={tab}
                     onClick={() => setActiveTab(tab)}
@@ -271,6 +272,10 @@ export default function App() {
 
             {activeTab === 'hrv' && (
               <HrvDashboard />
+            )}
+
+            {activeTab === 'trends' && (
+              <TrendsView parsedFiles={parsedFiles} summaries={supabaseSummaries} />
             )}
 
             {activeTab === 'checkin' && (

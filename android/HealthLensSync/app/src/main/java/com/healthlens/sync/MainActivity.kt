@@ -15,6 +15,12 @@ import androidx.health.connect.client.records.WeightRecord
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
 import androidx.lifecycle.lifecycleScope
+import android.content.Context
+import android.content.SharedPreferences
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.WorkManager
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -35,6 +41,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tokenInput: EditText
     private lateinit var syncButton: Button
     private lateinit var statusText: TextView
+    private lateinit var sharedPrefs: SharedPreferences
     
     private val defaultEndpoint = "https://health-lens-rust.vercel.app/api/sync/health-connect"
     
@@ -54,13 +61,25 @@ class MainActivity : AppCompatActivity() {
         syncButton = findViewById(R.id.syncButton)
         statusText = findViewById(R.id.statusText)
 
-        endpointInput.setText(defaultEndpoint)
+        sharedPrefs = getSharedPreferences("HealthLensSyncPrefs", Context.MODE_PRIVATE)
+
+        endpointInput.setText(sharedPrefs.getString("endpoint", defaultEndpoint))
+        tokenInput.setText(sharedPrefs.getString("token", ""))
+        
+        val lastSync = sharedPrefs.getString("lastSync", "Never")
+        statusText.text = "Last Sync: $lastSync"
 
         val healthConnectClient = HealthConnectClient.getOrCreate(this)
 
         syncButton.setOnClickListener {
             val endpoint = endpointInput.text.toString().trim()
             val token = tokenInput.text.toString().trim()
+            
+            sharedPrefs.edit().apply {
+                putString("endpoint", endpoint)
+                putString("token", token)
+                apply()
+            }
 
             if (endpoint.isBlank()) {
                 statusText.text = "Status: Endpoint is required."
@@ -80,6 +99,7 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             val granted = client.permissionController.getGrantedPermissions()
             if (granted.containsAll(permissions)) {
+                scheduleBackgroundSync()
                 readAndSyncData(client, endpoint, token)
             } else {
                 statusText.text = "Status: Permissions required"
@@ -87,6 +107,15 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this@MainActivity, "Please grant permissions in Health Connect", Toast.LENGTH_LONG).show()
             }
         }
+    }
+
+    private fun scheduleBackgroundSync() {
+        val syncRequest = PeriodicWorkRequestBuilder<SyncWorker>(4, TimeUnit.HOURS).build()
+        WorkManager.getInstance(applicationContext).enqueueUniquePeriodicWork(
+            "HealthLensBackgroundSync",
+            ExistingPeriodicWorkPolicy.UPDATE,
+            syncRequest
+        )
     }
 
     private suspend fun readAndSyncData(client: HealthConnectClient, endpoint: String, token: String) {
@@ -171,10 +200,17 @@ class MainActivity : AppCompatActivity() {
                 performPost(endpoint, token, payload)
             }
 
+            if (result.startsWith("Network error")) {
+                 val failTime = Instant.now().toString()
+                 getSharedPreferences("HealthLensSyncPrefs", Context.MODE_PRIVATE).edit().putString("lastSync", "Failed (Network) at $failTime").apply()
+            }
+
             statusText.text = "Status: $result"
             syncButton.isEnabled = true
             
         } catch (e: Exception) {
+            val failTime = Instant.now().toString()
+            getSharedPreferences("HealthLensSyncPrefs", Context.MODE_PRIVATE).edit().putString("lastSync", "Failed (App Error) at $failTime").apply()
             statusText.text = "Status: Sync failed - ${e.message}"
             syncButton.isEnabled = true
         }
@@ -201,11 +237,17 @@ class MainActivity : AppCompatActivity() {
             connection.disconnect()
 
             if (status in 200..299) {
-                "Last sync successful (${Instant.now()})\nHTTP $status"
+                val successTime = Instant.now().toString()
+                getSharedPreferences("HealthLensSyncPrefs", Context.MODE_PRIVATE).edit().putString("lastSync", "Success: $successTime").apply()
+                "Last sync successful ($successTime)\nHTTP $status"
             } else {
+                val failTime = Instant.now().toString()
+                getSharedPreferences("HealthLensSyncPrefs", Context.MODE_PRIVATE).edit().putString("lastSync", "Failed ($status) at $failTime").apply()
                 "Sync failed: HTTP $status\n$body"
             }
         } catch (e: Exception) {
+            val failTime = Instant.now().toString()
+            // Can't use Context inside this pure function without passing it, but performPost is inside MainActivity
             "Network error: ${e.message}"
         }
     }
