@@ -30,7 +30,7 @@ test('AI Rate Limit: Normal Request', async (t) => {
   let chunkResult = '';
   await runAnalysis({
     provider: 'groq',
-    model: 'llama-3.3-70b-versatile',
+    model: 'openai/gpt-oss-120b',
     parsedFiles: [],
     selectedModes: ['quickSummary'],
     onChunk: (text) => { chunkResult = text; },
@@ -49,7 +49,7 @@ test('AI Rate Limit: 429 Retry and Fallback', async (t) => {
     
     // First call: Groq Llama 70b -> 429
     if (callCount === 1) {
-      assert.equal(bodyObj.model, 'llama-3.3-70b-versatile');
+      assert.equal(bodyObj.model, 'openai/gpt-oss-120b');
       return {
         ok: false,
         status: 429,
@@ -59,7 +59,7 @@ test('AI Rate Limit: 429 Retry and Fallback', async (t) => {
     }
     // Second call: Groq Llama 70b -> 429 again
     if (callCount === 2) {
-      assert.equal(bodyObj.model, 'llama-3.3-70b-versatile');
+      assert.equal(bodyObj.model, 'openai/gpt-oss-120b');
       return {
         ok: false,
         status: 429,
@@ -69,7 +69,7 @@ test('AI Rate Limit: 429 Retry and Fallback', async (t) => {
     }
     // Third call: Groq Llama 70b -> 429 again (max retries reached for this model)
     if (callCount === 3) {
-      assert.equal(bodyObj.model, 'llama-3.3-70b-versatile');
+      assert.equal(bodyObj.model, 'openai/gpt-oss-120b');
       return {
         ok: false,
         status: 429,
@@ -103,7 +103,7 @@ test('AI Rate Limit: 429 Retry and Fallback', async (t) => {
   let chunks = [];
   await runAnalysis({
     provider: 'groq',
-    model: 'llama-3.3-70b-versatile',
+    model: 'openai/gpt-oss-120b',
     parsedFiles: [],
     selectedModes: ['quickSummary'],
     onChunk: (text) => { chunks.push(text) },
@@ -113,7 +113,7 @@ test('AI Rate Limit: 429 Retry and Fallback', async (t) => {
 
   assert.equal(callCount, 4);
   assert.ok(chunks.some(c => c.includes('Retrying automatically')), 'Should yield retry messages');
-  assert.ok(chunks.some(c => c.includes('llama-3.3-70b-versatile is temporarily busy')), 'Should yield fallback message');
+  assert.ok(chunks.some(c => c.includes('openai/gpt-oss-120b is temporarily busy')), 'Should yield fallback message');
 })
 
 test('AI Rate Limit: Complete Outage', async (t) => {
@@ -130,7 +130,7 @@ test('AI Rate Limit: Complete Outage', async (t) => {
   let errorSeen = '';
   await runAnalysis({
     provider: 'groq',
-    model: 'llama-3.3-70b-versatile',
+    model: 'openai/gpt-oss-120b',
     parsedFiles: [],
     selectedModes: ['quickSummary'],
     onChunk: (text) => { },

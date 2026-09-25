@@ -9,11 +9,11 @@ const PROVIDERS = [
     badgeClass: 'text-jade',
     placeholder: 'gsk_...',
     keyUrl: 'https://console.groq.com/keys',
-    note: 'Free tier available with fast Llama models.',
+    note: 'Free tier available with fast open-weight models.',
     models: [
-      { id: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B (recommended)' },
-      { id: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B (fastest)' },
-      { id: 'meta-llama/llama-4-scout-17b-16e-instruct', label: 'Llama 4 Scout' },
+      { id: 'openai/gpt-oss-120b', label: 'GPT-OSS 120B (recommended)' },
+      { id: 'openai/gpt-oss-20b', label: 'GPT-OSS 20B (fastest)' },
+      { id: 'qwen/qwen3.8-27b', label: 'Qwen 3.8 27B' },
     ],
   },
   {
