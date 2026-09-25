@@ -2,8 +2,6 @@ name: HealthLens Doctor
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '17 20 * * *'
 
 jobs:
   doctor:
